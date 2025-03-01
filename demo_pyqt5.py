@@ -20,9 +20,9 @@ import soundfile as sf
 
 import sys
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout
-from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis, QLegend
+from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis, QLegend, QAreaSeries
 from PyQt5.QtCore import Qt, QTimer, QCoreApplication
-from PyQt5.QtGui import QPainter, QFont
+from PyQt5.QtGui import QPainter, QFont, QLinearGradient, QGradient, QColor, QPen
 
 # In[2]:
 
@@ -259,17 +259,27 @@ suppression_duration = 1  # 相槌音声再生後の抑制時間（秒）【ユ�
 
 # グラフのリセット
 def reset_graph():
-    global time_data, confidence_data, start_time
+    global time_data, confidence_data, start_time, series, lower_series
     time_data = []
     confidence_data = []
     start_time = time.time()
+    
+    # グラフシリーズをクリア
+    if 'series' in globals() and series is not None:
+        series.clear()
+    
+    if 'lower_series' in globals() and lower_series is not None:
+        lower_series.clear()
+        # 下部ラインを再初期化（初期状態では表示範囲全体をカバー）
+        lower_series.append(0, 0)
+        lower_series.append(display_duration, 0)
 
 # In[15]:
 
 
 # グラフの更新
 def update_graph():
-    global series, time_data, confidence_data, axis_x
+    global series, lower_series, time_data, confidence_data, axis_x
 
     current_time = time.time() - start_time
 
@@ -277,9 +287,24 @@ def update_graph():
     time_data_filtered = [t for t in time_data if t <= current_time]
     confidence_data_filtered = confidence_data[:len(time_data_filtered)]
 
+    # メインの線シリーズをクリアして更新
     series.clear()
     for t, c in zip(time_data_filtered, confidence_data_filtered):
         series.append(t, c)
+    
+    # 下部ラインをクリアして更新（Y=0の位置）
+    # 現在のグラフの真下に色を表示するために、同じX座標を使用
+    lower_series.clear()
+    
+    # データがある場合のみ処理
+    if time_data_filtered:
+        # 各データポイントに対応するY=0の点を追加
+        for t in time_data_filtered:
+            lower_series.append(t, 0)
+    else:
+        # データがない場合は初期状態
+        lower_series.append(0, 0)
+        lower_series.append(display_duration, 0)
 
     # x軸の範囲を更新
     axis_x.setRange(0, display_duration)
@@ -329,78 +354,117 @@ def process_audio(indata, frames, time_info, status):
 
 # グラフの初期化 (修正後)
 def init_graph():
-    global chart, series, threshold_series, layout, axis_x, axis_y
+    global chart, series, threshold_series, layout, axis_x, axis_y, area_series, lower_series
 
     chart = QChart()
+    
+    # メインの線シリーズ
     series = QLineSeries()
+    series.setName("期待値")
+    series.setPen(QPen(QColor(0, 0, 0), 3))  # 黒色で太い線に設定
+    
+    # エリア表示用の下部ライン
+    lower_series = QLineSeries()
+    
+    # 閾値ライン
     threshold_series = QLineSeries()
+    threshold_series.setName("閾値")
+    threshold_series.setPen(QPen(QColor(255, 0, 0), 2, Qt.DashLine))  # 赤色の点線に設定
+    
+    # 下部ラインを初期化（Y=0の位置）
+    lower_series.append(0, 0)
+    lower_series.append(display_duration, 0)
+    
+    # シリーズをチャートに追加（先に追加してからエリアシリーズを作成）
     chart.addSeries(series)
+    chart.addSeries(lower_series)
     chart.addSeries(threshold_series)
-
+    
+    # エリアシリーズの作成（グラフの下を塗りつぶす）
+    area_series = QAreaSeries(series, lower_series)
+    area_series.setName("信頼度")
+    
+    # グラデーションの設定
+    gradient = QLinearGradient(0, 0, 0, 1)
+    gradient.setCoordinateMode(QGradient.ObjectBoundingMode)
+    gradient.setColorAt(0.0, QColor(255, 0, 0, 180))  # 上部（高い値）: 赤
+    gradient.setColorAt(0.3, QColor(255, 165, 0, 180))  # 中上部: オレンジ
+    gradient.setColorAt(0.6, QColor(255, 255, 0, 180))  # 中部: 黄色
+    gradient.setColorAt(1.0, QColor(0, 255, 0, 180))  # 下部（低い値）: 緑
+    
+    area_series.setBrush(gradient)
+    area_series.setPen(QPen(Qt.NoPen))  # エリアの境界線を非表示に
+    
+    # エリアシリーズをチャートに追加
+    chart.addSeries(area_series)
+    
     # フォント設定
-    font = QFont() # QFontオブジェクトを作成
-    font.setPointSize(30) # フォントサイズを12ポイントに設定 (調整可能)
+    font = QFont()
+    font.setPointSize(30)
 
     # タイトルフォント設定
-    chart_title_font = QFont() # タイトル用に別のQFontオブジェクトを作成しても良い
-    chart_title_font.setPointSize(40) # タイトルは少し大きめに設定 (調整可能)
-    chart_title_font.setBold(True) # タイトルを太字に (必要に応じて)
+    chart_title_font = QFont()
+    chart_title_font.setPointSize(40)
+    chart_title_font.setBold(True)
     chart.setTitle("相槌生成タイミング予測システム")
-    chart.setTitleFont(chart_title_font) # タイトルにフォントを適用
+    chart.setTitleFont(chart_title_font)
 
-
+    # X軸の設定
     axis_x = QValueAxis()
     axis_x.setTitleText("経過時間")
-    axis_x.setRange(0, display_duration)  # 初期表示範囲を設定
-
+    axis_x.setRange(0, display_duration)
+    
     # X軸タイトルフォント設定
     axis_x_font = QFont()
-    axis_x_font.setPointSize(30) # 軸タイトルフォントサイズ設定 (調整可能)
-    axis_x.setTitleFont(axis_x_font) # X軸タイトルにフォントを適用
+    axis_x_font.setPointSize(30)
+    axis_x.setTitleFont(axis_x_font)
     axis_x.setTickType(QValueAxis.TicksDynamic)
-    axis_x.setTickInterval(1.0)  # strideに合わせて格子線を表示
+    axis_x.setTickInterval(1.0)
     chart.addAxis(axis_x, Qt.AlignBottom)
-    series.attachAxis(axis_x)
-    threshold_series.attachAxis(axis_x)
-
-
+    
+    # Y軸の設定
     axis_y = QValueAxis()
     axis_y.setTitleText("期待値")
     axis_y.setRange(0, 1)
     axis_y.setTickCount(11)
-
+    
     # Y軸タイトルフォント設定
     axis_y_font = QFont()
-    axis_y_font.setPointSize(30) # 軸タイトルフォントサイズ設定 (調整可能)
-    axis_y.setTitleFont(axis_y_font) # Y軸タイトルにフォントを適用
+    axis_y_font.setPointSize(30)
+    axis_y.setTitleFont(axis_y_font)
     chart.addAxis(axis_y, Qt.AlignLeft)
+    
+    # シリーズを軸にアタッチ
+    series.attachAxis(axis_x)
     series.attachAxis(axis_y)
+    area_series.attachAxis(axis_x)
+    area_series.attachAxis(axis_y)
+    lower_series.attachAxis(axis_x)
+    lower_series.attachAxis(axis_y)
+    threshold_series.attachAxis(axis_x)
     threshold_series.attachAxis(axis_y)
-
-
+    
     # 閾値の線を初期化時に一度だけ描画
     threshold_series.append(0, bc_thre)
     threshold_series.append(display_duration, bc_thre)
-
+    
+    # チャートビューの設定
     chart_view = QChartView(chart)
     chart_view.setRenderHint(QPainter.Antialiasing)
-
     layout.addWidget(chart_view)
-
+    
     # 凡例の追加
     legend = chart.legend()
     legend.setVisible(True)
     legend.setAlignment(Qt.AlignTop)
-
+    
     # 凡例フォント設定
     legend_font = QFont()
-    legend_font.setPointSize(30) # 凡例フォントサイズ設定 (調整可能)
-    legend.setFont(legend_font) # 凡例にフォントを適用
-
-    series.setName("期待値")
-    threshold_series.setName("閾値")
-
-    reset_graph()  # グラフの初期化時にリセット
+    legend_font.setPointSize(30)
+    legend.setFont(legend_font)
+    
+    # グラフの初期化
+    reset_graph()
 
 # In[ ]:
 
